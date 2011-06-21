@@ -1,0 +1,24 @@
+PFI Code README (this should be updated):
+
+Basic compilation instructions for c:
+    gcc -O3 -ftree-vectorize -funroll-loops pfi.c -o pfi_c
+
+and for MPI:
+    mpicc -D_MPI_ -O3 -ftree-vectorize -funroll-loops pfi.c -o pfi_mpi
+
+Alternately, use the compile_c.sh or compile_mpi.sh scripts (which do the same thing).
+
+To run the c version:
+
+    ./pfi_c --reynolds_number 1.98 --circulation_parameter 1.8 --dt 0.001 --tolerance_level 0.0001 --number_boundary_level_bcs 20 --report_frequency 1 --incremental_file_frequency 1 --time_steps 10 --name testc
+
+And the mpi version:
+    mpirun -np 4 pfi_mpi --reynolds_number 1.98 --circulation_parameter 1.8 --dt 0.001 --tolerance_level 0.0001 --number_boundary_level_bcs 20 --report_frequency 1 --incremental_file_frequency 1 --time_steps 10 --name testmpi
+
+The report_frequency is how frequently the state of the simulation is printed to the screen.
+
+The incremental_file_frequency is how frequently a checkpoint is written to disk. A negative or 0 incremental_file_frequency means no files will be written.
+
+The time_steps is the number of iterations.
+
+The name is what the checkpoint and incremental files will be written as.  The checkpoint will be '<name>_checkpoint' and the incremental file names will be '<name>_report_<iteration>'.

@@ -614,7 +614,7 @@ void psi_calculation(int Nx, int My, double kappa2, double kappaA, double dxx, d
 #ifdef _MPI_
 //    if (process_id == 0) fprintf(stderr, "[rank: %d] kPsi: %d, PsiTol: %.10lf\n", process_id, kPsi, PsiTol);
 #else
-    fprintf(stderr, "kPsi: %d, PsiTol: %.10lf\n", kPsi, PsiTol);
+//    fprintf(stderr, "kPsi: %d, PsiTol: %.10lf\n", kPsi, PsiTol);
 #endif
 }
 
