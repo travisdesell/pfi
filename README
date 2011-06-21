@@ -1,4 +1,4 @@
-PFI Code README (this should be updated):
+PFI Code README (this should be improved):
 
 Basic compilation instructions for c:
     gcc -O3 -ftree-vectorize -funroll-loops pfi.c -o pfi_c
