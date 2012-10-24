@@ -8,12 +8,12 @@
  *
  *  This program solves the Vorticity-Streamline equations for the flow of  
  *  an incompressible fluid around a canonic parabola at various modified
- *  Reynolds Numbers and Circulation paramters with or without a synthetic
+ *  Reynolds Numbers and Circulation parameters with or without a synthetic
  *  jet modification.
  *
  *  Authors:
  *
- *  Wallace J. Morris II - Original author of ParabolaFlow in Fortan77,
+ *  Wallace J. Morris II - Original author of ParabolaFlow in Fortran77,
  *    added Omega,Psi, U, and V, boundary conditions, calculations and output,
  *    as well as the overarching program structure
  *
@@ -23,7 +23,7 @@
  *  Craig Hoffstein - Added synthetic jet functionality, user defined
  *    parameters, and variable mesh sizing
  *
- *  David McWilliams - Added synthetic jet functionality, wrote C version
+ *  David McWilliams - Added synthetic jet functionality, converted code into C
  *
  *
  *  OUTPUT FILE INDEX
@@ -37,7 +37,7 @@
  *    1.	Nx+2	(Total X direction points)
  *    2.	My+2	(Total Y direction points)
  *    3.	k	(Number of timesteps)
- *    4.	(not used, previously held kerr)
+ *    4.	no longer used (previously kerr)
  *    5.	IBL	(Rows treated as within boundary layer (5% of total Y))
  *    6.	ia	(Jet start location)
  *    7.	ib	(Jet end location)
@@ -68,17 +68,27 @@
  *    Xmin, Xmax 	X Boundaries
  *    Ymin, Ymax 	Y Boundaries
  *    x,y		Point Vectors
- *    Omega		Matrix of Vorticies
+ *    Omega		Matrix of Vortices
  *    Omega0		Previous Omega Matrix
  *    Psi		Matrix of Streamlines
  *    Psi0		Previous Psi Matrix
- *    u,v		Velocity Component Matricies
+ *    u,v		Velocity Component Matrices
  *    Re		Reynolds Number
  *    Rc		Cell Reynolds Number Rc = Re*dx/H
  *    C			Courant Number
  *    Kappa		Ratio of x and y spacing
  *    OmTol		Max change in Omega per iteration
  *    PsiTol		Max change in Psi per iteration
+ *
+ *
+ *    VERSION INFO
+ *    Version 3.2
+ *
+ *    Changes: 
+ *    3.2               Uses Serial Optimization via DM and DM2 matrices
+ *                      Uses pointers for Omega and Psi iterations
+ *
+ *    3.1               Original C conversion with jets
  */
 
 // Function Prototypes
@@ -87,17 +97,18 @@ void linspace(const double min, const double max, const int N,
 void OmegaCalc(const int Nx, const int My, const double Cx2, const double Cy2,
 	       const double alpha, const double alphaX, const double alphaY,
 	       double** Omega, double** Omega0, double** u, double** v,
-	       double* x, double* y);
+	       double** DM, double** DM2);
 void PsiCalc(const int Nx, const int My, const double Kappa2,
-	     const double KappaA, const double dxx, double** Psi,
-	     double** Psi0i, double** Omega, int* KPsi, double* x, double* y,
+	     const double KappaA, const double dxx, double*** Psi,
+	     double*** Psi0i, double** Omega, double** DM2, int* KPsi,
 	     const double Tol);
 int writeFile(double** Omega, double** Psi, double** u, double** v, int* OutIN,
 	      double* OutDP, const int Nx, const int My, char* outfile);
 void BCs (double** Omega, double** Psi, double** u, double** v, double* x,
-	  double* y, const double A, const int IBL, const double dyy,
-	  const int Nx, const int My, const double dx, const double t,
-	  const int ia, const int ib, const double c0, const double freq);
+	  double* y, double** DM, double** DM2, const double A, const int IBL,
+	  const double dyy, const int Nx, const int My, const double dx,
+	  const double t, const int ia, const int ib, const double c0,
+	  const double freq);
 
 
 int main() {
@@ -113,12 +124,11 @@ int main() {
 
   double *x,*y,*OutDP;
 
-  double **Omega,**Psi,**u,**v,**Omega0,**Psi0,**Psi0i;
+  double **Omega,**Psi,**u,**v,**Omega0,**Psi0,**Psi0i,**DM,**DM2;
 
   char filename[45],outfile[45];
 
   time_t now;
-
 
   //   User Input
   printf("\nWelcome to Parabola Flow Interactive\n\n");
@@ -194,6 +204,8 @@ int main() {
     Omega0=malloc((My+2)*sizeof(double*));
     Psi0=malloc((My+2)*sizeof(double*));
     Psi0i=malloc((My+2)*sizeof(double*));
+    DM=malloc((My+2)*sizeof(double*));
+    DM2=malloc((My+2)*sizeof(double*));
     OutDP=malloc((Nx+2)*sizeof(double));
     OutIN=malloc((Nx+2)*sizeof(int));
     for(i=0; i<My+2; ++i) {
@@ -202,6 +214,8 @@ int main() {
       u[i]=malloc((Nx+2)*sizeof(double));
       v[i]=malloc((Nx+2)*sizeof(double));
       Omega0[i]=malloc((Nx+2)*sizeof(double));
+      DM[i]=malloc((Nx+2)*sizeof(double));
+      DM2[i]=malloc((Nx+2)*sizeof(double));
       Psi0[i]=malloc((Nx+2)*sizeof(double));
       Psi0i[i]=malloc((Nx+2)*sizeof(double));
     }
@@ -214,6 +228,12 @@ int main() {
     linspace(Ymin,Ymax,My+2,y,&dy);
     dy2=2*dy;
     dyy=dy*dy;
+
+    for(i=0; i<My+2; ++i)
+      for(j=0; j<Nx+2; ++j) {
+	DM2[i][j]=pow(x[j],2)+pow(y[i],2);
+	DM[i][j]=sqrt(DM2[i][j]);
+      }
 
     Kappa2=pow((dx/dy),2);
     KappaA=1/(2*(1+Kappa2));
@@ -249,18 +269,16 @@ int main() {
     // Initialize v, u, Psi, and Omega
     for(i=1; i<My+2; ++i)
       for(j=0; j<Nx+2; ++j) {
-	v[i][j]=-(y[i]-1)/sqrt(pow(x[j],2)+pow(y[i],2));
-	u[i][j]=(x[j]+A)/sqrt(pow(x[j],2)+pow(y[i],2));
+	v[i][j]=-(y[i]-1)/DM[i][j];
+	u[i][j]=(x[j]+A)/DM[i][j];
 	Psi[i][j]=(x[j]+A)*(y[i]-1);
 	Omega[i][j]=0;
       }
-    double d6;
     for(j=0; j<Nx+2; ++j) {
-      d6=pow(x[j],2)+pow(y[0],2);
-      v[0][j]=-(y[0]-1)/sqrt(pow(x[j],2)+pow(y[0],2));
+      v[0][j]=-(y[0]-1)/DM[0][j];
       u[0][j]=0;
       Psi[0][j]=(x[j]+A)*(y[0]-1);
-      Omega[0][j]=((7*Psi[0][j]-8*Psi[1][j]+Psi[2][j])/(2*dyy))/d6;
+      Omega[0][j]=((7*Psi[0][j]-8*Psi[1][j]+Psi[2][j])/(2*dyy))/DM2[0][j];
     }
     time(&now);
     printf("\nFlow-field finished initializing at %s\n",ctime(&now));
@@ -300,6 +318,8 @@ int main() {
     Omega0=malloc((My+2)*sizeof(double*));
     Psi0=malloc((My+2)*sizeof(double*));
     Psi0i=malloc((My+2)*sizeof(double*));
+    DM=malloc((My+2)*sizeof(double*));
+    DM2=malloc((My+2)*sizeof(double*));
     OutDP=malloc((Nx+2)*sizeof(double));
     OutIN=malloc((Nx+2)*sizeof(int));
     for(i=0; i<My+2; ++i) {
@@ -308,6 +328,8 @@ int main() {
       u[i]=malloc((Nx+2)*sizeof(double));
       v[i]=malloc((Nx+2)*sizeof(double));
       Omega0[i]=malloc((Nx+2)*sizeof(double));
+      DM[i]=malloc((Nx+2)*sizeof(double));
+      DM2[i]=malloc((Nx+2)*sizeof(double));
       Psi0[i]=malloc((Nx+2)*sizeof(double));
       Psi0i[i]=malloc((Nx+2)*sizeof(double));
     }
@@ -406,6 +428,12 @@ int main() {
       dy2=2*dy;
       dyy=dy*dy;
 
+      for(i=0; i<My+2; ++i)
+	for(j=0; j<Nx+2; ++j) {
+	  DM2[i][j]=pow(x[j],2)+pow(y[i],2);
+	  DM[i][j]=sqrt(DM2[i][j]);
+	}
+
       Kappa2=pow((dx/dy),2);
       KappaA=1/(2*(1+Kappa2));
       const double Rc=Re*dx;
@@ -436,10 +464,6 @@ int main() {
       scanf("%d",&report);
       printf("What would you like to call the output file?\n");
       scanf("%s",filename);
-      int l=strlen(filename);
-      if(l>4 && filename[l-4]=='.' && filename[l-3]=='p' &&
-	 filename[l-2]=='f' && filename[l-1]=='i')
-	filename[l-4]='\0';
       printf("How many iterations between incremental file writes?\n");
       printf("(use -1 to turn off incremental save)\n");
       scanf("%d",&psave);
@@ -468,30 +492,42 @@ int main() {
   // Begin Calculations for each time step, k
   int KPsi,tic1=0,tic2=0,ct=0;
   double OmTol,PsiTol,t;
-  while(k<Ot) {
-    ++k;
-    OmTol=0;
-    PsiTol=0;
+  double** temp;
+  while(k++<Ot) {
+    OmTol=PsiTol=0;
+
+    for(i=1; i<My+1; ++i) {
+      Omega0[i][0]=Omega[i][0];
+      Omega0[i][Nx+1]=Omega[i][Nx+1];
+      Psi0i[i][0]=Psi[i][0];
+      Psi0i[i][Nx+1]=Psi[i][Nx+1];
+    }
+
+    memcpy(Omega0[0],Omega[0],(Nx+2)*sizeof(double));
+    memcpy(Omega0[My+1],Omega[My+1],(Nx+2)*sizeof(double));
+    memcpy(Psi0i[0],Psi[0],(Nx+2)*sizeof(double));
+    memcpy(Psi0i[My+1],Psi[My+1],(Nx+2)*sizeof(double));
+
+    temp=Omega0;
+    Omega0=Omega;
+    Omega=temp;
+
     for(i=0; i<My+2; ++i)
-      for(j=0; j<Nx+2; ++j) {
-	Omega0[i][j]=Omega[i][j];
-	Psi0[i][j]=Psi[i][j];
-      }
+      memcpy(Psi0[i],Psi[i],(Nx+2)*sizeof(double));
 
     // Omega and Psi Calculations
-    OmegaCalc(Nx,My,Cx2,Cy2,alpha,alphaX,alphaY,Omega,Omega0,u,v,x,y);
-    PsiCalc(Nx,My,Kappa2,KappaA,dxx,Psi,Psi0i,Omega,&KPsi,x,y,Tol);
+    OmegaCalc(Nx,My,Cx2,Cy2,alpha,alphaX,alphaY,Omega,Omega0,u,v,DM,DM2);
+    PsiCalc(Nx,My,Kappa2,KappaA,dxx,&Psi,&Psi0i,Omega,DM2,&KPsi,Tol);
 
-    // Lower and Upper BCs
+    // Boundary Conditions
     t=k*dt;
-    BCs(Omega,Psi,u,v,x,y,A,IBL,dyy,Nx,My,dx,t,ia,ib,c0,freq);
+    BCs(Omega,Psi,u,v,x,y,DM,DM2,A,IBL,dyy,Nx,My,dx,t,ia,ib,c0,freq);
 
     // Calculate velocities
     for(i=1; i<My+1; ++i)
       for(j=1; j<Nx+1; ++j) {
-	double d3=sqrt(pow(x[j],2)+pow(y[i],2));
-	u[i][j]=(Psi[i+1][j]-Psi[i-1][j])/dy2/d3;
-	v[i][j]=-(Psi[i][j+1]-Psi[i][j-1])/dx2/d3;
+	u[i][j]=(Psi[i+1][j]-Psi[i-1][j])/dy2/DM[i][j];
+	v[i][j]=-(Psi[i][j+1]-Psi[i][j-1])/dx2/DM[i][j];
       }
 
     // Check max value change
@@ -563,7 +599,7 @@ int main() {
   }
 
   // Writes Final Output File
-  sprintf(outfile,"%s",filename);
+  strcpy(outfile,filename);
   printf("Writing output file ");
   for(j=0; j<Nx+2; ++j) {
     OutIN[j]=0;
@@ -609,6 +645,8 @@ int main() {
     free(Omega0[i]);
     free(Psi0[i]);
     free(Psi0i[i]);
+    free(DM[i]);
+    free(DM2[i]);
   }
   free(x);
   free(y);
@@ -619,6 +657,8 @@ int main() {
   free(Omega0);
   free(Psi0);
   free(Psi0i);
+  free(DM);
+  free(DM2);
   free(OutDP);
   free(OutIN);
 
@@ -640,33 +680,28 @@ void linspace(const double min, const double max, const int N,
 void OmegaCalc(const int Nx, const int My, const double Cx2, const double Cy2,
 	       const double alpha, const double alphaX, const double alphaY,
 	       double** Omega, double** Omega0, double** u, double** v,
-	       double* x, double* y) {
+	       double** DM, double** DM2) {
   int i,j;
-  double d,dip1,dim1,djp1,djm1;
 
   for(i=1; i<My+1; ++i)
     for(j=1; j<Nx+1; ++j) {
-      d=sqrt(pow(x[j],2)+pow(y[i],2));
-      dip1=sqrt(pow(x[j],2)+pow(y[i+1],2));
-      dim1=sqrt(pow(x[j],2)+pow(y[i-1],2));
-      djp1=sqrt(pow(x[j+1],2)+pow(y[i],2));
-      djm1=sqrt(pow(x[j-1],2)+pow(y[i],2));
 
-      Omega[i][j]=Omega0[i][j]*(1-alpha/(d*d))+
-	Omega0[i][j+1]*(-Cx2*u[i][j+1]*djp1+alphaX)/(d*d)+
-	Omega0[i][j-1]*(Cx2*u[i][j-1]*djm1+alphaX)/(d*d)+
-	Omega0[i+1][j]*(-Cy2*v[i+1][j]*dip1+alphaY)/(d*d)+
-	Omega0[i-1][j]*(Cy2*v[i-1][j]*dim1+alphaY)/(d*d);
+      Omega[i][j]=Omega0[i][j]*(1-alpha/DM2[i][j])+
+	Omega0[i][j+1]*(-Cx2*u[i][j+1]*DM[i][j+1]+alphaX)/DM2[i][j]+
+	Omega0[i][j-1]*(Cx2*u[i][j-1]*DM[i][j-1]+alphaX)/DM2[i][j]+
+	Omega0[i+1][j]*(-Cy2*v[i+1][j]*DM[i+1][j]+alphaY)/DM2[i][j]+
+	Omega0[i-1][j]*(Cy2*v[i-1][j]*DM[i-1][j]+alphaY)/DM2[i][j];
     }
 }
 
 // Iterative Stream Function Routine
 void PsiCalc(const int Nx, const int My, const double Kappa2,
-	     const double KappaA, const double dxx, double** Psi,
-	     double** Psi0i, double** Omega, int* KPsi, double* x, double* y,
+	     const double KappaA, const double dxx, double*** Psi,
+	     double*** Psi0i, double** Omega, double** DM2, int* KPsi,
 	     const double Tol) {
   int i,j;
-  double PsiTol=1,Psi1m=0,d2;
+  double PsiTol=1;
+  double** temp;
 
   *KPsi=0;
 
@@ -674,18 +709,17 @@ void PsiCalc(const int Nx, const int My, const double Kappa2,
     ++*KPsi;
     PsiTol=0;
 
-    for(i=0; i<My+2; ++i)
-      for(j=0; j<Nx+2; ++j)
-	Psi0i[i][j]=Psi[i][j];
+    temp=*Psi0i;
+    *Psi0i=*Psi;
+    *Psi=temp;
 
     for(i=1; i<My+1; ++i)
       for(j=1; j<Nx+1; ++j) {
-	d2=pow(x[j],2)+pow(y[i],2);
-	Psi[i][j]=KappaA*(dxx*Omega[i][j]*d2+Psi0i[i][j+1]+
-			  Psi0i[i][j-1]+Kappa2*(Psi0i[i+1][j]+
-						Psi0i[i-1][j]));
-	if(fabs(Psi[i][j]-Psi0i[i][j])>PsiTol)
-	  PsiTol=fabs(Psi[i][j]-Psi0i[i][j]);
+	(*Psi)[i][j]=KappaA*(dxx*Omega[i][j]*DM2[i][j]+(*Psi0i)[i][j+1]+
+			  (*Psi0i)[i][j-1]+Kappa2*((*Psi0i)[i+1][j]+
+						(*Psi0i)[i-1][j]));
+	if(fabs((*Psi)[i][j]-(*Psi0i)[i][j])>PsiTol)
+	  PsiTol=fabs((*Psi)[i][j]-(*Psi0i)[i][j]);
       }
   }
 }
@@ -737,37 +771,36 @@ int writeFile(double** Omega, double** Psi, double** u,double** v, int* OutIN,
 
 // Boundary Conditions
 void BCs (double** Omega, double** Psi, double** u, double** v, double* x,
-	  double* y, const double A, const int IBL, const double dyy,
-	  const int Nx, const int My, const double dx, const double t,
-	  const int ia, const int ib, const double c0, const double freq) {
+	  double* y, double** DM, double** DM2, const double A, const int IBL,
+	  const double dyy, const int Nx, const int My, const double dx,
+	  const double t, const int ia, const int ib, const double c0,
+	  const double freq) {
   int i,j;
 
-  double d6;
   const double pi=3.14159265358979;
   const double amewa=(ia-((Nx+1)/2+1))*dx;
   const double f=sin(2*pi*freq*t);
 
   // Upper and Lower BCs
   for(j=0; j<Nx+2; ++j) {
-    d6=pow(x[j],2)+pow(y[0],2);
     Psi[0][j]=0;
     if(j>=ia-1 && j<=ib-1)
       Psi[0][j]=(-c0*(-0.5*amewa*sqrt(pow(amewa,2)+1)-0.5*sinh(amewa)
 		      +0.5*x[j]*sqrt(pow(x[j],2)+1)+0.5*sinh(x[j])))*f;
     if(j>ib-1)
       Psi[0][j]=Psi[0][ib-1];
-    Omega[0][j]=(7*Psi[0][j]-8*Psi[1][j]+Psi[2][j])/(2*dyy)/d6;
+    Omega[0][j]=(7*Psi[0][j]-8*Psi[1][j]+Psi[2][j])/(2*dyy)/DM2[0][j];
     u[0][j]=0;
     v[0][j]=0;
     if(j>ia-1 && j<ib-1)
       v[0][j]=c0*f;
     if(j>=ia-2 && j<=ib)
       Omega[0][j]+=(v[0][j+1]*sqrt(pow(x[j+1],2)+1)
-		    -v[0][j-1]*sqrt(pow(x[j-1],2)+1))/(2*dx)/d6;
+		    -v[0][j-1]*sqrt(pow(x[j-1],2)+1))/(2*dx)/DM2[0][j];
     Omega[My+1][j]=0;
     Psi[My+1][j]=(x[j]+A)*(y[My+1]-1);
-    u[My+1][j]=(x[j]+A)/sqrt(pow(x[j],2)+pow(y[My+1],2));
-    v[My+1][j]=-(y[My+1]-1)/sqrt(pow(x[j],2)+pow(y[My+1],2));
+    u[My+1][j]=(x[j]+A)/DM[My+1][j];
+    v[My+1][j]=-(y[My+1]-1)/DM[My+1][j];
   }
 
   // Side BCs
@@ -785,12 +818,12 @@ void BCs (double** Omega, double** Psi, double** u, double** v, double* x,
     else {
       Omega[i][0]=0;
       Psi[i][0]=(x[0]+A)*(y[i]-1);
-      u[i][0]=(x[0]+A)/sqrt(pow(x[0],2)+pow(y[i],2));
-      v[i][0]=-(y[i]-1)/sqrt(pow(x[0],2)+pow(y[i],2));
+      u[i][0]=(x[0]+A)/DM[i][0];
+      v[i][0]=-(y[i]-1)/DM[i][0];
       Omega[i][Nx+1]=0;
       Psi[i][Nx+1]=(x[Nx+1]+A)*(y[i]-1);
-      u[i][Nx+1]=(x[Nx+1]+A)/sqrt(pow(x[Nx+1],2)+pow(y[i],2));
-      v[i][Nx+1]=-(y[i]-1)/sqrt(pow(x[Nx+1],2)+pow(y[i],2));
+      u[i][Nx+1]=(x[Nx+1]+A)/DM[i][Nx+1];
+      v[i][Nx+1]=-(y[i]-1)/DM[i][Nx+1];
     }
   }
 }
