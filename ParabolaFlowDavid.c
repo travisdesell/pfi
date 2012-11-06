@@ -1,3 +1,4 @@
+#include<omp.h>
 #include<math.h>
 #include<stdio.h>
 #include<stdlib.h>
@@ -82,9 +83,11 @@
  *
  *
  *    VERSION INFO
- *    Version 3.2
+ *    Version 3.3
  *
  *    Changes: 
+ *    3.3               Added Parallelization using OpenMP
+ *
  *    3.2               Uses Serial Optimization via DM and DM2 matrices
  *                      Uses pointers for Omega and Psi iterations
  *
@@ -94,11 +97,11 @@
 // Function Prototypes
 void linspace(const double min, const double max, const int N,
 	      double* x, double* dx);
-void OmegaCalc(const int Nx, const int My, const double Cx2, const double Cy2,
+void OmegaCalc(const int Nx, int My, const double Cx2, const double Cy2,
 	       const double alpha, const double alphaX, const double alphaY,
 	       double** Omega, double** Omega0, double** u, double** v,
 	       double** DM, double** DM2);
-void PsiCalc(const int Nx, const int My, const double Kappa2,
+void PsiCalc(const int Nx, int My, const double Kappa2,
 	     const double KappaA, const double dxx, double*** Psi,
 	     double*** Psi0i, double** Omega, double** DM2, int* KPsi,
 	     const double Tol);
@@ -496,6 +499,7 @@ int main() {
   while(k++<Ot) {
     OmTol=PsiTol=0;
 
+#pragma omp parallel for
     for(i=1; i<My+1; ++i) {
       Omega0[i][0]=Omega[i][0];
       Omega0[i][Nx+1]=Omega[i][Nx+1];
@@ -512,6 +516,7 @@ int main() {
     Omega0=Omega;
     Omega=temp;
 
+#pragma omp parallel for
     for(i=0; i<My+2; ++i)
       memcpy(Psi0[i],Psi[i],(Nx+2)*sizeof(double));
 
@@ -524,21 +529,37 @@ int main() {
     BCs(Omega,Psi,u,v,x,y,DM,DM2,A,IBL,dyy,Nx,My,dx,t,ia,ib,c0,freq);
 
     // Calculate velocities
-    for(i=1; i<My+1; ++i)
-      for(j=1; j<Nx+1; ++j) {
-	u[i][j]=(Psi[i+1][j]-Psi[i-1][j])/dy2/DM[i][j];
-	v[i][j]=-(Psi[i][j+1]-Psi[i][j-1])/dx2/DM[i][j];
-      }
+#pragma omp parallel default(shared)
+    {
+#pragma omp for
+      for(i=1; i<My+1; ++i)
+#pragma omp parallel shared(i, My)
+	{
+#pragma omp for
+	  for(j=1; j<Nx+1; ++j) {
+	    u[i][j]=(Psi[i+1][j]-Psi[i-1][j])/dy2/DM[i][j];
+	    v[i][j]=-(Psi[i][j+1]-Psi[i][j-1])/dx2/DM[i][j];
+	  }
+	}
+    }
 
     // Check max value change
 
-    for(i=0; i<My+2; ++i)
-      for(j=0; j<Nx+2; ++j) {
-	if(fabs(Omega[i][j]-Omega0[i][j])>OmTol)
-	  OmTol=fabs(Omega[i][j]-Omega0[i][j]);
-	if(fabs(Psi[i][j]-Psi0[i][j])>PsiTol)
-	  PsiTol=fabs(Psi[i][j]-Psi0[i][j]);
-      }
+#pragma omp parallel default(shared)
+    {
+#pragma omp for
+      for(i=0; i<My+2; ++i)
+#pragma omp parallel shared(i, My, OmTol, PsiTol)
+	{
+#pragma omp for
+	  for(j=0; j<Nx+2; ++j) {
+	    if(fabs(Omega[i][j]-Omega0[i][j])>OmTol)
+	      OmTol=fabs(Omega[i][j]-Omega0[i][j]);
+	    if(fabs(Psi[i][j]-Psi0[i][j])>PsiTol)
+	      PsiTol=fabs(Psi[i][j]-Psi0[i][j]);
+	  }
+	}
+    }
 
     if(k==Ot)
       break;
@@ -677,25 +698,32 @@ void linspace(const double min, const double max, const int N,
 }
 
 // Finite difference approximation for vorticity
-void OmegaCalc(const int Nx, const int My, const double Cx2, const double Cy2,
+void OmegaCalc(const int Nx, int My, const double Cx2, const double Cy2,
 	       const double alpha, const double alphaX, const double alphaY,
 	       double** Omega, double** Omega0, double** u, double** v,
 	       double** DM, double** DM2) {
   int i,j;
 
-  for(i=1; i<My+1; ++i)
-    for(j=1; j<Nx+1; ++j) {
-
-      Omega[i][j]=Omega0[i][j]*(1-alpha/DM2[i][j])+
-	Omega0[i][j+1]*(-Cx2*u[i][j+1]*DM[i][j+1]+alphaX)/DM2[i][j]+
-	Omega0[i][j-1]*(Cx2*u[i][j-1]*DM[i][j-1]+alphaX)/DM2[i][j]+
-	Omega0[i+1][j]*(-Cy2*v[i+1][j]*DM[i+1][j]+alphaY)/DM2[i][j]+
-	Omega0[i-1][j]*(Cy2*v[i-1][j]*DM[i-1][j]+alphaY)/DM2[i][j];
-    }
+#pragma omp parallel default(shared)
+  {
+#pragma omp for
+    for(i=1; i<My+1; ++i)
+#pragma omp parallel shared(i, My)
+      {
+#pragma omp for
+	for(j=1; j<Nx+1; ++j) {
+	  Omega[i][j]=Omega0[i][j]*(1-alpha/DM2[i][j])+
+	    Omega0[i][j+1]*(-Cx2*u[i][j+1]*DM[i][j+1]+alphaX)/DM2[i][j]+
+	    Omega0[i][j-1]*(Cx2*u[i][j-1]*DM[i][j-1]+alphaX)/DM2[i][j]+
+	    Omega0[i+1][j]*(-Cy2*v[i+1][j]*DM[i+1][j]+alphaY)/DM2[i][j]+
+	    Omega0[i-1][j]*(Cy2*v[i-1][j]*DM[i-1][j]+alphaY)/DM2[i][j];
+	}
+      }
+  }
 }
 
 // Iterative Stream Function Routine
-void PsiCalc(const int Nx, const int My, const double Kappa2,
+void PsiCalc(const int Nx, int My, const double Kappa2,
 	     const double KappaA, const double dxx, double*** Psi,
 	     double*** Psi0i, double** Omega, double** DM2, int* KPsi,
 	     const double Tol) {
@@ -713,14 +741,22 @@ void PsiCalc(const int Nx, const int My, const double Kappa2,
     *Psi0i=*Psi;
     *Psi=temp;
 
-    for(i=1; i<My+1; ++i)
-      for(j=1; j<Nx+1; ++j) {
-	(*Psi)[i][j]=KappaA*(dxx*Omega[i][j]*DM2[i][j]+(*Psi0i)[i][j+1]+
-			  (*Psi0i)[i][j-1]+Kappa2*((*Psi0i)[i+1][j]+
-						(*Psi0i)[i-1][j]));
-	if(fabs((*Psi)[i][j]-(*Psi0i)[i][j])>PsiTol)
-	  PsiTol=fabs((*Psi)[i][j]-(*Psi0i)[i][j]);
-      }
+#pragma omp parallel default(shared)
+    {
+#pragma omp for
+      for(i=1; i<My+1; ++i)
+#pragma omp parallel shared(i, My, PsiTol)
+	{
+#pragma omp for
+	  for(j=1; j<Nx+1; ++j) {
+	    (*Psi)[i][j]=KappaA*(dxx*Omega[i][j]*DM2[i][j]+(*Psi0i)[i][j+1]+
+				 (*Psi0i)[i][j-1]+Kappa2*((*Psi0i)[i+1][j]+
+							  (*Psi0i)[i-1][j]));
+	    if(fabs((*Psi)[i][j]-(*Psi0i)[i][j])>PsiTol)
+	      PsiTol=fabs((*Psi)[i][j]-(*Psi0i)[i][j]);
+	  }
+	}
+    }
   }
 }
 
